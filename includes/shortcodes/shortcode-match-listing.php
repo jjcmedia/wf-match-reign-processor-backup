@@ -649,6 +649,17 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 			}
 		}
 
+		// Ensure ordering attributes exist and have safe defaults when shortcode is used without attributes
+		if ( ! isset( $atts['orderby'] ) || $atts['orderby'] === '' ) {
+			$atts['orderby'] = 'date';
+		}
+		if ( ! isset( $atts['meta_key'] ) ) {
+			$atts['meta_key'] = '';
+		}
+		if ( ! isset( $atts['order'] ) || $atts['order'] === '' ) {
+			$atts['order'] = 'DESC';
+		}
+
 		$query_args = array(
 			'post_type' => defined( 'WF_MATCH_CPT' ) ? WF_MATCH_CPT : 'match',
 			'post_status' => array( 'publish', 'private', 'draft' ),

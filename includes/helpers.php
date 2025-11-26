@@ -9,6 +9,12 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/* Optional: load central match-type config when present so wf_is_match_tag can use it */
+$mt_cfg = __DIR__ . '/match-type-config.php';
+if ( file_exists( $mt_cfg ) ) {
+	require_once $mt_cfg;
+}
+
 if ( ! function_exists( 'jjc_mh_ensure_string' ) ) {
 	function jjc_mh_ensure_string( $val ) {
 		// Null/empty
@@ -126,81 +132,6 @@ if ( ! function_exists( 'jjc_mh_get_team_ids_for_superstar' ) ) {
 		}
 		$out = array_values( array_unique( array_map( 'intval', $out ) ) );
 		return $out;
-	}
-}
-
-/* --- NEW: helper to expand a team post into member superstar IDs --- */
-if ( ! function_exists( 'jjc_mh_get_team_member_ids' ) ) {
-	function jjc_mh_get_team_member_ids( $team_post_id ) {
-		$team_post_id = intval( $team_post_id );
-		if ( ! $team_post_id ) return array();
-
-		$keys = array( 'members', 'team_members', 'member_ids', 'members_ids', 'roster', 'team_roster', 'wf_members', 'members_list' );
-		$out = array();
-
-		// 1) ACF relationship/repeater style fields
-		if ( function_exists( 'get_field' ) ) {
-			foreach ( $keys as $k ) {
-				$f = get_field( $k, $team_post_id );
-				if ( empty( $f ) ) continue;
-				if ( is_array( $f ) ) {
-					foreach ( $f as $item ) {
-						if ( is_numeric( $item ) ) $out[] = intval( $item );
-						elseif ( is_object( $item ) && isset( $item->ID ) ) $out[] = intval( $item->ID );
-						elseif ( is_array( $item ) && isset( $item['ID'] ) && is_numeric( $item['ID'] ) ) $out[] = intval( $item['ID'] );
-					}
-					if ( ! empty( $out ) ) return array_values( array_unique( $out ) );
-				}
-			}
-		}
-
-		// 2) Common postmeta patterns (JSON, serialized, CSV)
-		foreach ( $keys as $k ) {
-			$v = get_post_meta( $team_post_id, $k, true );
-			if ( empty( $v ) ) continue;
-
-			if ( is_numeric( $v ) ) {
-				$out[] = intval( $v );
-			} elseif ( is_array( $v ) ) {
-				foreach ( $v as $itm ) if ( is_numeric( $itm ) ) $out[] = intval( $itm );
-			} elseif ( is_string( $v ) ) {
-				$dec = @json_decode( $v, true );
-				if ( is_array( $dec ) ) {
-					foreach ( $dec as $itm ) if ( is_numeric( $itm ) ) $out[] = intval( $itm );
-				} else {
-					$maybe_ser = @unserialize( $v );
-					if ( is_array( $maybe_ser ) ) {
-						foreach ( $maybe_ser as $itm ) if ( is_numeric( $itm ) ) $out[] = intval( $itm );
-					}
-					if ( strpos( $v, ',' ) !== false ) {
-						foreach ( explode( ',', $v ) as $itm ) if ( ctype_digit( trim( $itm ) ) ) $out[] = intval( $itm );
-					}
-				}
-			}
-
-			if ( ! empty( $out ) ) return array_values( array_unique( $out ) );
-		}
-
-		// 3) Child posts (some setups store members as child posts)
-		$children = get_posts( array(
-			'post_type' => 'any',
-			'posts_per_page' => -1,
-			'post_parent' => $team_post_id,
-			'fields' => 'ids',
-		) );
-		if ( ! empty( $children ) ) {
-			foreach ( $children as $cid ) if ( is_numeric( $cid ) ) $out[] = intval( $cid );
-			if ( ! empty( $out ) ) return array_values( array_unique( $out ) );
-		}
-
-		return array_values( array_unique( array_map( 'intval', $out ) ) );
-	}
-}
-
-/* Backwards-compatible alias used elsewhere in your code */
-if ( ! function_exists( 'jjc_mh_expand_team_to_members' ) ) {
-	function jjc_mh_expand_team_to_members( $team_post_id ) {
-		return jjc_mh_get_team_member_ids( $team_post_id );
 	}
 }
 
@@ -438,305 +369,143 @@ if ( ! function_exists( 'wf_get_row_class' ) ) {
 	}
 }
 
-/**
- * Calculate number of days for a reign excluding the start date.
- *
- * Behavior:
- * - If $end_date is null/empty the function uses the current site time.
- * - Returns 0 when end <= start (no negative days).
- * - Uses WordPress timezone (wp_timezone()) when available so counts respect site timezone.
- * - Uses DateTimeImmutable and ->diff('%a') to return calendar days excluding the start date.
- *
- * Examples:
- * - start = 2025-11-23, end = 2025-11-24 => returns 1
- * - start = 2025-11-23, end = 2025-11-23 => returns 0
- * - start = 2025-11-23, end = null (ongoing) => returns days since start excluding the start day
- *
- * @param string|int|null $start_date Date string or timestamp for the start (required).
- * @param string|int|null $end_date   Date string or timestamp for the end (optional).
- * @return int Number of days excluding the start date.
- */
-if ( ! function_exists( 'wf_mr_calculate_reign_days' ) ) {
-	function wf_mr_calculate_reign_days( $start_date, $end_date = null ) {
-		if ( empty( $start_date ) ) {
-			return 0;
-		}
-
-		// Prefer WP timezone when available; fall back to option or UTC
-		$tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new DateTimeZone( get_option( 'timezone_string' ) ?: 'UTC' );
-
-		$to_dt = function( $val ) use ( $tz ) {
-			if ( $val === null || $val === '' ) return null;
-
-			// If it's an integer, examine digit count to decide interpretation.
-			if ( is_int( $val ) ) {
-				$s = (string) $val;
-				// 8-digit integers -> treat as YYYYMMDD
-				if ( preg_match( '/^\d{8}$/', $s ) ) {
-					$dt = DateTimeImmutable::createFromFormat( 'Ymd', $s, $tz );
-					if ( $dt ) return $dt->setTimezone( $tz );
-				}
-				// Large ints (likely unix timestamps) -> treat as timestamp
-				$ival = intval( $val );
-				if ( $ival > 1000000000 ) {
-					return ( new DateTimeImmutable( "@$ival" ) )->setTimezone( $tz );
-				}
-				// otherwise fall through to null
-				return null;
-			}
-
-			// Normalize to string
-			$raw = (string) $val;
-
-			// 8-digit YYYYMMDD should be parsed first (avoid mistaking as timestamp)
-			if ( preg_match( '/^\d{8}$/', $raw ) ) {
-				$dt = DateTimeImmutable::createFromFormat( 'Ymd', $raw, $tz );
-				if ( $dt ) return $dt->setTimezone( $tz );
-			}
-
-			// YYYY-MM-DD
-			if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $raw ) ) {
-				$dt = DateTimeImmutable::createFromFormat( 'Y-m-d', $raw, $tz );
-				if ( $dt ) return $dt->setTimezone( $tz );
-			}
-
-			// If it's a numeric string and appears to be a Unix timestamp, only treat it as such when it's large enough.
-			if ( ctype_digit( $raw ) && strlen( $raw ) <= 10 ) {
-				$maybe_ts = intval( $raw );
-				if ( $maybe_ts > 1000000000 ) {
-					return ( new DateTimeImmutable( "@$maybe_ts" ) )->setTimezone( $tz );
-				}
-				// If it's numeric but too small to be a timestamp and not an 8-digit date, avoid interpreting it as timestamp.
-			}
-
-			// fallback to strtotime-parsed timestamp
-			$ts = strtotime( $raw );
-			if ( $ts !== false && $ts !== -1 ) {
-				return ( new DateTimeImmutable( "@$ts" ) )->setTimezone( $tz );
-			}
-
-			return null;
-		};
-
-		$start = $to_dt( $start_date );
-		if ( ! $start ) return 0;
-
-		$end = $to_dt( $end_date );
-		if ( ! $end ) {
-			$end = new DateTimeImmutable( 'now', $tz );
-		}
-
-		// If end <= start => 0
-		if ( $end <= $start ) return 0;
-
-		// Use calendar-day difference: %a is the number of days between dates, excluding the start date.
-		$diff = $end->diff( $start );
-		return (int) $diff->format( '%a' );
-	}
-}
-
-// Ensure match-type-config is available (defines wf_get_tag_match_types)
-$__wf_match_type_config = __DIR__ . '/match-type-config.php';
-if ( file_exists( $__wf_match_type_config ) ) {
-	require_once $__wf_match_type_config;
-}
+/* --------------------------
+   New: strict tag-match detection
+   -------------------------- */
 
 /**
- * Determine whether a match should be considered a tag match.
+ * Determine if a match should be treated as a tag match.
  *
- * Signature is forgiving so callers may pass:
- *  - wf_is_match_tag( $match_id )
- *  - wf_is_match_tag( $match_id, $participant_ids_array )
- *  - wf_is_match_tag( $match_id, null, $rows_array )
- *  - wf_is_match_tag( null, 'Six-Man Tag' )  // evaluate by string
+ * Logic summary (conservative / strict):
+ * 1) If explicit match_type matches configured tag types -> tag.
+ * 2) If any participant row has role containing "tag" -> tag.
+ * 3) If any raw participant is a team post type -> tag.
+ * 4) Fallback: expanded participant count >= 4 -> tag.
  *
- * Logic:
- *  1) If explicit match_type string provided, compare (case-insensitive)
- *     against wf_get_tag_match_types() (if available).
- *  2) If $match_id provided, prefer post meta / ACF match_type.
- *  3) If taxonomy terms exist for common match-type taxonomies, check term
- *     name/slug against configured tag types.
- *  4) Fallback: use provided participant IDs or rows to determine participant count
- *     and treat >2 participants as tag (2 is singles).
+ * This avoids misclassifying triple-threats (3-person singles) as tag matches.
  *
- * Returns bool.
+ * @param int $match_id
+ * @param array|null $expanded_participant_ids Optional expanded individual IDs (if previously computed)
+ * @param array|null $rows Optional rows returned by wf_get_match_participants_rows
+ * @return bool
  */
 if ( ! function_exists( 'wf_is_match_tag' ) ) {
-	function wf_is_match_tag( $match_id = null, $maybe = null, $rows = null ) {
-		// Normalize candidate match_type string vs participant ids
+	function wf_is_match_tag( $match_id, $expanded_participant_ids = null, $rows = null ) {
+		$match_id = intval( $match_id );
+		if ( ! $match_id ) return false;
+
+		$team_post_types = array( 'team', 'teams', 'stable' );
+
+		// 1) Prefer explicit match type config (strict)
 		$match_type = '';
-		$participant_ids = null;
-		$provided_rows = null;
-
-		// If $maybe is an array assume it's participant IDs
-		if ( is_array( $maybe ) ) {
-			$participant_ids = array_values( array_map( 'intval', $maybe ) );
+		if ( function_exists( 'wf_get_match_type_candidate' ) ) {
+			$match_type = wf_get_match_type_candidate( $match_id );
 		} else {
-			// If it's a scalar string, treat as match_type string
-			if ( is_string( $maybe ) && trim( $maybe ) !== '' ) {
-				$match_type = trim( strtolower( $maybe ) );
-			} elseif ( is_numeric( $maybe ) && (string)(int)$maybe === (string)$maybe ) {
-				// numeric second param might be a term id or count — prefer match meta below
-				$match_type = '';
-			}
-		}
-
-		// Provided rows may be passed as third arg
-		if ( is_array( $rows ) && ! empty( $rows ) ) {
-			$provided_rows = $rows;
-		}
-
-		// If we have a match_id and no explicit match_type string, try to read meta/ACF
-		if ( $match_id && $match_type === '' ) {
-			// prefer post meta
-			$mt = get_post_meta( $match_id, 'match_type', true );
-			if ( empty( $mt ) && function_exists( 'get_field' ) ) {
+			if ( function_exists( 'get_field' ) ) {
 				$mt = get_field( 'match_type', $match_id );
+				if ( $mt !== null && $mt !== '' ) $match_type = (string) $mt;
 			}
-			if ( ! empty( $mt ) ) {
-				$match_type = trim( strtolower( (string) $mt ) );
+			if ( $match_type === '' ) {
+				$mt = get_post_meta( $match_id, 'match_type', true );
+				if ( $mt !== '' && $mt !== null ) $match_type = (string) $mt;
 			}
 		}
-
-		// --- REPLACED: taxonomy-first, config-driven logic ---
-		// Load configured tag types (match-type-config.php via wf_get_tag_match_types)
-		$tag_types = array();
-		if ( function_exists( 'wf_get_tag_match_types' ) ) {
-			$tag_types = (array) wf_get_tag_match_types();
-		}
-		if ( empty( $tag_types ) ) {
-			$tag_types = array( 'tag', 'tag team', 'tag-team', 'tagteam', 'trios', 'six-man', 'six man', 'six-man tag', 'war games', 'wargames', 'mens-war-games', 'mens war games', 'four-on-four', 'gauntlet' );
-		}
-		// Normalize to lowercase strings and unique
-		$norm = array();
-		foreach ( (array) $tag_types as $t ) {
-			if ( ! is_scalar( $t ) ) continue;
-			$val = trim( (string) $t );
-			if ( $val !== '' ) $norm[] = strtolower( $val );
-		}
-		$tag_types = array_values( array_unique( $norm ) );
-
-		// Helper: check a WP_Term object against configured tag types.
-		$term_matches_tag_types = function( $term ) use ( $tag_types ) {
-			if ( ! $term ) return false;
-			$tname = trim( strtolower( (string) $term->name ) );
-			$tslug = trim( strtolower( (string) $term->slug ) );
-			$tid = intval( $term->term_id );
-			foreach ( $tag_types as $tt ) {
-				// numeric configured values may represent term IDs
-				if ( ctype_digit( $tt ) && intval( $tt ) === $tid ) return true;
-				if ( $tt === $tname || strpos( $tname, $tt ) !== false ) return true;
-				if ( $tt === $tslug || strpos( $tslug, $tt ) !== false ) return true;
+		if ( $match_type !== '' ) {
+			$t = strtolower( trim( (string) $match_type ) );
+			if ( function_exists( 'wf_get_tag_match_types' ) ) {
+				$types = wf_get_tag_match_types();
+				if ( is_array( $types ) ) {
+					$norm = array_map( 'strtolower', $types );
+					if ( in_array( $t, $norm, true ) ) return true;
+				}
 			}
-			// explicit singles markers -> decisive non-tag
-			$singles_keywords = array( 'singles', 'singles match', 'singles-match' );
-			if ( in_array( $tname, $singles_keywords, true ) || in_array( $tslug, array( 'singles', 'singles-match' ), true ) ) {
-				return 'singles';
-			}
-			return false;
-		};
-
-		// 1) PRIMARY: taxonomy term checks (decisive)
-		if ( $match_id ) {
-			$taxonomies_to_check = array( 'match-type', 'match_type', 'type' );
-			foreach ( $taxonomies_to_check as $tax ) {
-				if ( taxonomy_exists( $tax ) ) {
-					$terms = get_the_terms( $match_id, $tax );
-					if ( is_array( $terms ) && ! empty( $terms ) ) {
-						foreach ( $terms as $term ) {
-							$res = $term_matches_tag_types( $term );
-							if ( $res === true ) return true;
-							if ( $res === 'singles' ) return false;
+			// also compare taxonomy terms for match_type
+			if ( taxonomy_exists( 'match_type' ) ) {
+				$terms = get_the_terms( $match_id, 'match_type' );
+				if ( is_array( $terms ) && ! empty( $terms ) ) {
+					foreach ( $terms as $term ) {
+						$slug = isset( $term->slug ) ? strtolower( $term->slug ) : '';
+						$name = isset( $term->name ) ? strtolower( $term->name ) : '';
+						if ( function_exists( 'wf_get_tag_match_types' ) ) {
+							$types = wf_get_tag_match_types();
+							if ( in_array( $slug, $types, true ) || in_array( $name, $types, true ) ) return true;
+						} elseif ( $slug === $t || $name === $t ) {
+							return true;
 						}
 					}
 				}
 			}
 		}
 
-		// 2) explicit match_type meta/ACF (configured phrases or numeric ids)
-		if ( $match_id && $match_type === '' ) {
-			$mt = get_post_meta( $match_id, 'match_type', true );
-			if ( empty( $mt ) && function_exists( 'get_field' ) ) {
-				$mt = get_field( 'match_type', $match_id );
-			}
-			if ( ! empty( $mt ) ) $match_type = trim( strtolower( (string) $mt ) );
+		// 2) Ensure we have participant rows and expanded ids
+		if ( $rows === null && function_exists( 'wf_get_match_participants_rows' ) ) {
+			$rows = wf_get_match_participants_rows( $match_id );
 		}
-		if ( $match_type !== '' ) {
-			foreach ( $tag_types as $tt ) {
-				if ( ctype_digit( $tt ) && ctype_digit( $match_type ) && intval( $tt ) === intval( $match_type ) ) return true;
-				if ( $tt === $match_type || strpos( $match_type, $tt ) !== false ) return true;
-			}
-			if ( strpos( $match_type, 'singles' ) !== false || strpos( $match_type, 'single' ) !== false ) return false;
+		if ( $expanded_participant_ids === null && function_exists( 'wf_expand_match_participants_to_individuals' ) ) {
+			$expanded_participant_ids = wf_expand_match_participants_to_individuals( $match_id );
 		}
+		if ( ! is_array( $rows ) ) $rows = array();
+		if ( ! is_array( $expanded_participant_ids ) ) $expanded_participant_ids = array();
 
-		// 3) FALLBACK: consult wf_match_snapshot if taxonomy & match_type inconclusive
-		if ( $match_id ) {
-			$snap = get_post_meta( $match_id, 'wf_match_snapshot', true );
-			if ( is_string( $snap ) ) {
-				$dec = json_decode( $snap, true );
-				if ( is_array( $dec ) && isset( $dec['is_tag'] ) ) {
-					return (bool) $dec['is_tag'];
-				}
-			} elseif ( is_array( $snap ) && isset( $snap['is_tag'] ) ) {
-				return (bool) $snap['is_tag'];
-			}
+		// 3) If any participant row's role explicitly contains "tag", treat as tag (explicit)
+		foreach ( (array) $rows as $r ) {
+			if ( ! empty( $r['role'] ) && stripos( (string) $r['role'], 'tag' ) !== false ) return true;
 		}
 
-		// 4) participant rows: explicit 'role' containing "tag" or team-side markers (A/B)
-		if ( is_array( $provided_rows ) ) {
-			foreach ( $provided_rows as $r ) {
-				if ( is_array( $r ) && ! empty( $r['role'] ) ) {
-					$role = strtolower( (string) $r['role'] );
-					if ( strpos( $role, 'tag' ) !== false ) return true;
-					if ( in_array( $role, array( 'a', 'b', 'team a', 'team b' ), true ) ) return true;
-				}
-			}
-		}
-
-		// 5) team post types indicate tag matches
-		$team_post_types = array( 'team', 'teams', 'stable' );
-
-		if ( is_array( $participant_ids ) && ! empty( $participant_ids ) ) {
-			foreach ( $participant_ids as $pid ) {
+		// 4) If any participant in the raw rows is a team post, treat this as tag (teams imply multi-member)
+		foreach ( (array) $rows as $r ) {
+			$pid = isset( $r['participant'] ) ? intval( $r['participant'] ) : 0;
+			if ( $pid ) {
 				$ptype = function_exists( 'get_post_type' ) ? get_post_type( $pid ) : '';
 				if ( in_array( $ptype, $team_post_types, true ) ) return true;
 			}
 		}
 
-		if ( $match_id ) {
-			$winners = get_post_meta( $match_id, 'wf_winners', true );
-			if ( is_array( $winners ) && ! empty( $winners ) ) {
-				foreach ( $winners as $w ) {
-					$w = intval( $w );
-					if ( ! $w ) continue;
-					$ptype = function_exists( 'get_post_type' ) ? get_post_type( $w ) : '';
-					if ( in_array( $ptype, $team_post_types, true ) ) return true;
+		// 5) Conservative fallback using expanded participant count:
+		// - 4 or more expanded participants -> tag (typical tag-team / multi-team)
+		// - 2 or 3 participants -> treat as singles/multiman (do not classify as tag)
+		$expanded_count = count( $expanded_participant_ids );
+		if ( $expanded_count >= 4 ) return true;
+
+		// Otherwise, not a tag match.
+		return false;
+	}
+}
+
+/**
+ * Read a candidate "match_type" value for a match.
+ * Looks in ACF, meta, and match_type taxonomy.
+ *
+ * @param int $match_id
+ * @return string
+ */
+if ( ! function_exists( 'wf_get_match_type_candidate' ) ) {
+	function wf_get_match_type_candidate( $match_id ) {
+		$match_id = intval( $match_id );
+		if ( ! $match_id ) return '';
+		$val = '';
+
+		if ( function_exists( 'get_field' ) ) {
+			$maybe = get_field( 'match_type', $match_id );
+			if ( $maybe !== null && $maybe !== '' ) $val = (string) $maybe;
+		}
+
+		if ( $val === '' ) {
+			$maybe = get_post_meta( $match_id, 'match_type', true );
+			if ( $maybe !== '' && $maybe !== null ) $val = (string) $maybe;
+		}
+
+		if ( $val === '' ) {
+			// try taxonomy 'match_type'
+			if ( taxonomy_exists( 'match_type' ) ) {
+				$terms = get_the_terms( $match_id, 'match_type' );
+				if ( is_array( $terms ) && ! empty( $terms ) ) {
+					// use first term name
+					$val = isset( $terms[0]->name ) ? (string) $terms[0]->name : '';
 				}
 			}
 		}
 
-		// 6) final fallback: participant count heuristic (>2 => tag)
-		$count = 0;
-		if ( is_array( $participant_ids ) ) {
-			$count = count( $participant_ids );
-		} elseif ( is_array( $provided_rows ) && ! empty( $provided_rows ) ) {
-			$ids = array();
-			foreach ( $provided_rows as $r ) {
-				if ( is_array( $r ) && ! empty( $r['participant'] ) ) $ids[] = intval( $r['participant'] );
-			}
-			$count = count( array_values( array_unique( $ids ) ) );
-		} elseif ( $match_id ) {
-			$mp = get_post_meta( $match_id, 'match_participants', true );
-			if ( empty( $mp ) ) $mp = get_post_meta( $match_id, 'participants', true );
-			if ( is_array( $mp ) ) $count = count( $mp );
-			else {
-				$maybe_ser = maybe_unserialize( $mp );
-				if ( is_array( $maybe_ser ) ) $count = count( $maybe_ser );
-				else $count = intval( $mp );
-			}
-		}
-
-		// Treat >2 participants as tag; exactly 2 as singles
-		return ( $count > 2 );
+		return trim( (string) $val );
 	}
 }
