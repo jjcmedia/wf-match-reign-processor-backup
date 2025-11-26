@@ -2,10 +2,14 @@
 /**
  * Shortcode: match listing (wfmc-* classes)
  *
- * Final replacement: robust team/member/stable handling and winner expansion so
- * individual members of a winning team get the winner class.
+ * Restored full rendering (participants, team expansion, promo image,
+ * championship detection) and fixed membership lookup and sorting by event date:
+ *  - Candidate meta_query includes 'match_participants_expanded' and 'wf_match_snapshot'
+ *  - Authoritative post-filter uses wf_match_contains_superstar (when available) or
+ *    precise checks against snapshot/expanded meta.
+ *  - After filtering, matches are sorted newest-first by event/match date before rendering.
  *
- * Overwrite this file at includes/shortcodes/shortcode-match-listing.php
+ * Replace file at includes/shortcodes/shortcode-match-listing.php
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -182,6 +186,11 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 			if ( function_exists( 'get_field' ) ) {
 				$maybe = get_field( 'participants_details', $match_id );
 				if ( is_array( $maybe ) ) $rows = $maybe;
+				// also support singular field name
+				if ( empty( $rows ) ) {
+					$maybe2 = get_field( 'participant_details', $match_id );
+					if ( is_array( $maybe2 ) ) $rows = $maybe2;
+				}
 			}
 			if ( empty( $rows ) ) {
 				$raw = get_post_meta( $match_id, 'participants_details', true );
@@ -209,7 +218,7 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 				if ( empty( $rows ) ) {
 					$meta = get_post_meta( $match_id );
 					foreach ( $meta as $mk => $mv ) {
-						if ( preg_match( '/^participants_details_\\d+_participant$/', $mk ) ) {
+						if ( preg_match( '/^participants?_details_\\d+_participant$/', $mk ) ) {
 							$val = get_post_meta( $match_id, $mk, true );
 							if ( $val !== '' ) $rows[] = array( 'participant' => $val );
 						}
@@ -225,7 +234,7 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 					if ( $pid ) $winner_ids[] = $pid;
 				}
 			}
-			if ( empty( $winner_ids ) && empty( $rows ) ) {
+			if ( empty( $winner_ids ) ) {
 				$meta_winners = get_post_meta( $match_id, 'wf_winners', true );
 				if ( empty( $meta_winners ) ) $meta_winners = get_post_meta( $match_id, 'winners', true );
 				if ( $meta_winners ) {
@@ -243,15 +252,11 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 					$wid = intval( $wid );
 					if ( ! $wid ) continue;
 					$ptype = function_exists( 'get_post_type' ) ? get_post_type( $wid ) : '';
-					if ( $ptype === 'team' ) {
-						if ( function_exists( 'jjc_mh_expand_team_to_members_local' ) ) {
-							$members = jjc_mh_expand_team_to_members_local( $wid );
-						} elseif ( function_exists( 'wfmc_expand_team_safe' ) ) {
-							$members = wfmc_expand_team_safe( $wid );
-						} elseif ( function_exists( 'jjc_mh_expand_team_to_members' ) ) {
+					if ( in_array( $ptype, array( 'team', 'teams', 'stable' ), true ) ) {
+						if ( function_exists( 'jjc_mh_expand_team_to_members' ) ) {
 							$members = jjc_mh_expand_team_to_members( $wid );
 						} else {
-							$members = array();
+							$members = jjc_mh_expand_team_to_members_local( $wid );
 						}
 						if ( is_array( $members ) && ! empty( $members ) ) {
 							foreach ( $members as $m ) $expanded_winner_ids[] = intval( $m );
@@ -331,7 +336,11 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 						$ptype = function_exists( 'get_post_type' ) ? get_post_type( $pid ) : '';
 						if ( $ptype === 'team' ) {
 							// robust expansion: try helper then local meta-based checks
-							$team_members = jjc_mh_expand_team_to_members_local( $pid );
+							if ( function_exists( 'jjc_mh_expand_team_to_members' ) ) {
+								$team_members = jjc_mh_expand_team_to_members( $pid );
+							} else {
+								$team_members = jjc_mh_expand_team_to_members_local( $pid );
+							}
 							if ( ! empty( $team_members ) ) {
 								$member_labels = array();
 								foreach ( $team_members as $tm ) {
@@ -550,7 +559,7 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 			if ( $match_time === null || $match_time === '' ) $match_time = get_post_meta( $m_id, 'match_time', true );
 			$match_time = trim( (string) $match_time );
 
-			// Build row
+			// Build row HTML consistent with prior visuals
 			$tr  = '<tr class="wfmc-row">';
 			$tr .= '<td class="wfmc-col wfmc-col-date">' . esc_html( $post_date ) . '</td>';
 			$tr .= '<td class="wfmc-col wfmc-col-promo">';
@@ -608,17 +617,15 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 			return $tr;
 		};
 
-		// explicit id -> single-row table; return debug if not found
+		// explicit id -> single-row table
 		if ( $provided ) {
 			$row = $render_full_match_row( $provided );
 			$debug_comment_for_provided = '<!-- wf-debug: provided=' . esc_html( (string) $provided ) . '; row_exists=' . ( $row ? '1' : '0' ) . ' -->';
-			if ( trim( $row ) === '' ) {
-				return $debug_comment_for_provided;
-			}
+			if ( trim( $row ) === '' ) return $debug_comment_for_provided;
 			return '<table class="wfmc-table" cellpadding="0" cellspacing="0" border="0"><tbody>' . $row . '</tbody></table>' . $debug_comment_for_provided;
 		}
 
-		// Superstar listing
+		/* Superstar listing: find matches where superstar appears (directly or via team) */
 		$superstar_id = 0;
 		if ( is_singular( 'superstar' ) ) $superstar_id = get_the_ID();
 		else { global $post; if ( isset( $post->ID ) && get_post_type( $post->ID ) === 'superstar' ) $superstar_id = intval( $post->ID ); }
@@ -631,7 +638,8 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 			if ( is_array( $teams ) ) $search_ids = array_values( array_unique( array_merge( $search_ids, array_map( 'intval', $teams ) ) ) );
 		}
 
-		$participant_keys = array( 'match_participants', 'participants_details', 'participants', 'participants_list' );
+		// Candidate meta keys: include explicit expanded key and snapshot JSON so team/member data is found
+		$participant_keys = array( 'match_participants', 'participants_details', 'participants', 'participants_list', 'match_participants_expanded', 'wf_match_snapshot' );
 		$mq = array( 'relation' => 'OR' );
 		foreach ( $participant_keys as $meta_key ) {
 			foreach ( $search_ids as $sid ) {
@@ -642,33 +650,129 @@ if ( ! function_exists( 'jjc_mh_match_participants_title_acf' ) ) {
 		}
 
 		$query_args = array(
-			'post_type'   => 'match',
-			'post_status' => 'publish',
+			'post_type' => defined( 'WF_MATCH_CPT' ) ? WF_MATCH_CPT : 'match',
+			'post_status' => array( 'publish', 'private', 'draft' ),
 			'numberposts' => -1,
-			'meta_query'  => $mq,
-			'orderby'     => 'meta_value_num date',
-			'meta_key'    => 'match_order',
-			'order'       => 'ASC',
+			'meta_query' => $mq,
+			'orderby' => $atts['orderby'],
+			'meta_key' => $atts['meta_key'],
+			'order' => $atts['order'],
 		);
 
 		$matches = get_posts( $query_args );
 
-		$debug_comment = '<!-- wf-debug: provided=' . esc_html( (string) $provided )
-			. '; superstar_id=' . esc_html( (string) $superstar_id )
-			. '; search_ids=' . esc_html( implode( ',', array_map( 'intval', $search_ids ) ) )
-			. '; matches=' . intval( count( $matches ) )
-			. ' -->';
+		$debug_comment = '<!-- wf-debug: superstar_id=' . esc_html( (string) $superstar_id ) . '; search_ids=' . esc_html( implode( ',', array_map( 'intval', $search_ids ) ) ) . '; matches=' . intval( count( $matches ) ) . ' -->';
 
-		if ( empty( $matches ) ) {
-			return $debug_comment;
-		}
+		if ( empty( $matches ) ) return $debug_comment;
 
 		$match_ids = array_map( function( $m ){ return intval( $m->ID ); }, $matches );
 		$unique_ids = array_values( array_unique( $match_ids ) );
 
-		$rows = '';
+		// POST-FILTER: ensure each match actually contains the superstar (precise authoritative check)
+		$filtered = array();
 		foreach ( $unique_ids as $m_id ) {
-			$rows .= $render_full_match_row( intval( $m_id ) );
+			$m_id = intval( $m_id );
+			if ( ! $m_id ) continue;
+			$contains = false;
+			if ( function_exists( 'wf_match_contains_superstar' ) ) {
+				$contains = wf_match_contains_superstar( $m_id, $superstar_id );
+			} else {
+				// fallback: snapshot substring check
+				$snap = get_post_meta( $m_id, 'wf_match_snapshot', true );
+				if ( is_string( $snap ) && strpos( $snap, '"' . $superstar_id . '"' ) !== false ) $contains = true;
+				if ( ! $contains ) {
+					$exp = get_post_meta( $m_id, 'match_participants_expanded', true );
+					if ( is_array( $exp ) && in_array( $superstar_id, array_map( 'intval', $exp ), true ) ) $contains = true;
+					elseif ( is_string( $exp ) && strpos( $exp, '"' . $superstar_id . '"' ) !== false ) $contains = true;
+				}
+			}
+			if ( $contains ) $filtered[] = $m_id;
+		}
+
+		if ( empty( $filtered ) ) return $debug_comment;
+
+		// ----- SORT filtered matches by most recent event/match date (newest-first) -----
+		$match_ts = array();
+		$get_match_timestamp = function( $mid ) {
+			$mid = intval( $mid );
+			if ( ! $mid ) return 0;
+			$candidates = array();
+
+			// Prefer event-level date if available
+			if ( function_exists( 'jjc_mh_get_event_details' ) ) {
+				$ev = jjc_mh_get_event_details( $mid );
+				$ev_id = isset( $ev['id'] ) ? intval( $ev['id'] ) : 0;
+				if ( $ev_id ) {
+					if ( function_exists( 'get_field' ) ) {
+						$val = get_field( 'event_date', $ev_id );
+						if ( $val ) $candidates[] = $val;
+					}
+					$v = get_post_meta( $ev_id, 'event_date', true ); if ( $v ) $candidates[] = $v;
+					$v = get_post_meta( $ev_id, 'event_date_ymd', true ); if ( $v ) $candidates[] = $v;
+				}
+			}
+
+			// Match-level date fields
+			if ( function_exists( 'get_field' ) ) {
+				$val = get_field( 'event_date', $mid );
+				if ( $val ) $candidates[] = $val;
+			}
+			$v = get_post_meta( $mid, 'event_date', true ); if ( $v ) $candidates[] = $v;
+			$v = get_post_meta( $mid, 'match_date', true ); if ( $v ) $candidates[] = $v;
+			$v = get_post_meta( $mid, 'event_date_ymd', true ); if ( $v ) $candidates[] = $v;
+
+			// Snapshot applied_at
+			$snap = get_post_meta( $mid, 'wf_match_snapshot', true );
+			if ( is_string( $snap ) ) {
+				$dec = json_decode( $snap, true );
+				if ( is_array( $dec ) && ! empty( $dec['applied_at'] ) ) $candidates[] = $dec['applied_at'];
+			} elseif ( is_array( $snap ) && ! empty( $snap['applied_at'] ) ) {
+				$candidates[] = $snap['applied_at'];
+			}
+
+			// Now attempt to parse candidates into timestamp
+			foreach ( $candidates as $cand ) {
+				if ( empty( $cand ) ) continue;
+				$cand_str = (string) $cand;
+				// YYYYMMDD
+				if ( preg_match( '/^\d{8}$/', $cand_str ) ) {
+					$dt = DateTime::createFromFormat( 'Ymd', $cand_str );
+					if ( $dt ) return (int) $dt->getTimestamp();
+				}
+				// ISO date
+				if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $cand_str ) ) {
+					$ts = strtotime( $cand_str );
+					if ( $ts !== false ) return (int) $ts;
+				}
+				// large numeric = unix ts
+				if ( ctype_digit( $cand_str ) && strlen( $cand_str ) >= 9 ) {
+					return (int) $cand_str;
+				}
+				// strtotime fallback
+				$ts = strtotime( $cand_str );
+				if ( $ts !== false && $ts > 0 ) return (int) $ts;
+			}
+
+			// fallback to post date
+			return (int) get_post_time( 'U', false, $mid );
+		};
+
+		foreach ( $filtered as $fid ) {
+			$match_ts[ intval( $fid ) ] = $get_match_timestamp( $fid );
+		}
+
+		// sort filtered array by timestamp descending (newest first)
+		usort( $filtered, function( $a, $b ) use ( $match_ts ) {
+			$ta = isset( $match_ts[ intval( $a ) ] ) ? intval( $match_ts[ intval( $a ) ] ) : 0;
+			$tb = isset( $match_ts[ intval( $b ) ] ) ? intval( $match_ts[ intval( $b ) ] ) : 0;
+			if ( $ta == $tb ) return 0;
+			return ( $ta > $tb ) ? -1 : 1;
+		} );
+		// ----- end sort -----
+
+		$rows = '';
+		foreach ( $filtered as $m_id ) {
+			$rows .= $render_full_match_row( $m_id );
 		}
 
 		if ( trim( $rows ) === '' ) return $debug_comment;
