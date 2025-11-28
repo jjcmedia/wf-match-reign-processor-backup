@@ -2,9 +2,8 @@
 /**
  * Shortcode handler: wf_shortcode_superstar_record
  *
- * Superstar record output (cleaned):
- *  - Championships and Feuds removed (these are handled elsewhere / not tracked here)
- *  - Keeps the current layout and visual tweaks (profile, metadata, stats)
+ * Clean, semantic markup for the superstar header.
+ * Inline styles removed — all visuals come from the shortcodes.css dashboard block.
  *
  * Path:
  *   includes/shortcodes/shortcode-superstar-record.php
@@ -29,65 +28,19 @@ if ( ! function_exists( 'wf_shortcode_superstar_record' ) ) {
 			return '';
 		}
 
-		// simple meta helper
 		$get_meta = function( $key, $default = '' ) use ( $post_id ) {
 			$v = get_post_meta( $post_id, $key, true );
 			if ( $v === '' || $v === null ) return $default;
 			return $v;
 		};
 
-		// robust date parse (returns DateTimeImmutable or empty string)
-		$parse_superstar_date = function( $raw ) {
+		$parse_date = function( $raw ) {
 			if ( empty( $raw ) ) return '';
-			if ( is_string( $raw ) && trim( $raw ) === '0' ) return '';
-			if ( $raw instanceof DateTimeInterface ) return new DateTimeImmutable( $raw->format( 'c' ) );
-
-			if ( is_numeric( $raw ) ) {
-				$raw_str = (string) $raw;
-				$len = strlen( $raw_str );
-				if ( $len >= 10 && intval( $raw ) > 1000000000 ) {
-					try {
-						$dt = new DateTimeImmutable( "@".intval( $raw ) );
-						$tz = new DateTimeZone( date_default_timezone_get() ?: 'UTC' );
-						return $dt->setTimezone( $tz );
-					} catch ( Exception $e ) {
-						return '';
-					}
-				}
-				if ( $len === 8 ) {
-					$dt = DateTimeImmutable::createFromFormat( 'Ymd', $raw_str );
-					if ( $dt instanceof DateTimeImmutable ) return $dt;
-				}
-				return '';
-			}
-
-			$formats = array(
-				'Y-m-d','Y/m/d','Y.m.d','Ymd',
-				'm/d/Y','d/m/Y','d-m-Y',
-				'F j, Y','F j Y','j F Y','Y',
-			);
-			foreach ( $formats as $fmt ) {
-				$dt = DateTimeImmutable::createFromFormat( $fmt, $raw );
-				if ( $dt instanceof DateTimeImmutable ) {
-					$ts = $dt->getTimestamp();
-					if ( $ts > 0 ) return $dt;
-				}
-			}
-
 			$ts = strtotime( $raw );
-			if ( $ts !== false && $ts > 0 ) {
-				$dt = new DateTimeImmutable( "@$ts" );
-				$tz = new DateTimeZone( date_default_timezone_get() ?: 'UTC' );
-				$dt = $dt->setTimezone( $tz );
-				$year = (int) $dt->format( 'Y' );
-				$current_year = (int) date( 'Y' );
-				if ( $year >= 1900 && $year <= $current_year ) return $dt;
-			}
-
-			return '';
+			if ( $ts === false || $ts <= 0 ) return '';
+			return date_i18n( 'F j, Y', $ts );
 		};
 
-		// Load fields
 		$name = get_the_title( $post_id );
 		$photo = $get_meta( 'superstar_image', '' );
 		if ( is_numeric( $photo ) ) {
@@ -104,15 +57,7 @@ if ( ! function_exists( 'wf_shortcode_superstar_record' ) ) {
 		if ( ! $status_term ) $status_term = $get_meta( 'superstar_status', '' );
 
 		$real_name = $get_meta( 'superstar_real_name', '' );
-
-		$dob_raw = $get_meta( 'date_of_birth', '' );
-		$dob = '';
-		if ( $dob_raw !== '' ) {
-			$dt_obj = $parse_superstar_date( $dob_raw );
-			if ( $dt_obj instanceof DateTimeImmutable ) {
-				$dob = date_i18n( 'F j, Y', $dt_obj->getTimestamp() );
-			}
-		}
+		$dob = $parse_date( $get_meta( 'date_of_birth', '' ) );
 
 		$hometown_term = '';
 		if ( taxonomy_exists( 'location' ) ) {
@@ -145,11 +90,9 @@ if ( ! function_exists( 'wf_shortcode_superstar_record' ) ) {
 		$wins            = (int) $get_meta( 'wf_wins', 0 );
 		$losses          = (int) $get_meta( 'wf_losses', 0 );
 
-		// load tag-specific counters if present
 		$tag_wins   = (int) $get_meta( 'wf_tag_wins', 0 );
 		$tag_losses = (int) $get_meta( 'wf_tag_losses', 0 );
 
-		// compute win percentages (one decimal)
 		$singles_win_pct = '';
 		if ( $singles_matches > 0 ) {
 			$singles_win_pct = round( ( (float) $wins / (float) max(1, $singles_matches ) ) * 100, 1 );
@@ -159,118 +102,85 @@ if ( ! function_exists( 'wf_shortcode_superstar_record' ) ) {
 			$tag_win_pct = round( ( (float) $tag_wins / (float) max(1, $tag_matches ) ) * 100, 1 );
 		}
 
-		// Notable feuds and championships removed — not used here
-
-		// Build markup
+		// Build markup (no inline styles)
 		$out = '<div class="wf-superstar-record" aria-labelledby="wf-superstar-' . esc_attr( $post_id ) . '">';
-
-		// Scoped styles: keep existing visuals and set .value color to #D2D2D2
-		$out .= '<style>';
-		$out .= '.wf-superstar-record .wf-profile-photo{ width:118px;height:118px;border-radius:6px;overflow:hidden;background:#101010;display:flex;align-items:center;justify-content:center; border:1px solid rgba(0,0,0,0.45); box-shadow:0 3px 8px rgba(0,0,0,0.45) inset; margin:0 auto; }';
-		$out .= '.wf-superstar-record .wf-profile-photo img{ width:100%;height:100%;object-fit:cover;display:block; }';
-		$out .= '.wf-superstar-record .wf-record-dashboard{ display:flex; gap:16px; align-items:flex-start; width:100%; box-sizing:border-box; }';
-		$out .= '.wf-superstar-record .wf-record-profile{ flex:0 0 160px; max-width:160px; padding:12px; border-radius:8px; border:1px solid rgba(0,0,0,0.25); background:transparent; box-sizing:border-box; }';
-		$out .= '.wf-superstar-record .wf-record-main{ flex:0 0 250px; max-width:250px; min-width:160px; box-sizing:border-box; display:flex; flex-direction:column; gap:8px; }';
-		$out .= '.wf-superstar-record .wf-match-meta{ padding:6px 10px; border-radius:6px; background: rgba(0,0,0,0.02); border:1px solid rgba(0,0,0,0.35); }';
-		$out .= '.wf-superstar-record .wf-match-meta .value { color: #D2D2D2; }';
-		$out .= '.wf-superstar-record .wf-record-side{ flex:1 1 auto; min-width:0; box-sizing:border-box; margin-left:auto; display:flex; justify-content:flex-end; }';
-		$out .= '.wf-superstar-record .wf-record-side .wf-record-stats{ display:flex; flex-direction:column; gap:12px; align-items:flex-end; width:100%; max-width:900px; }';
-		$out .= '.wf-superstar-record .wf-stats-row { display:flex; gap:14px; align-items:flex-start; justify-content:flex-end; flex-wrap:wrap; }';
-		$out .= '.wf-superstar-record .wf-stats-col { min-width:180px; max-width:360px; border:1px solid rgba(0,0,0,0.35); border-radius:8px; box-shadow: 0 6px 20px rgba(0,0,0,0.45) inset; }';
-		$out .= '.wf-superstar-record .wf-stats-group{ padding:10px; border-radius:8px; }';
-		$out .= '.wf-superstar-record .wf-stats-group .row-like{ display:flex; justify-content:space-between; padding:6px 8px; border-radius:6px; background:rgba(0,0,0,0.02); margin-bottom:6px; }';
-		$out .= '.wf-superstar-record .wf-stats-group .label{ color:#6b7280; font-size:0.9rem; }';
-		$out .= '.wf-superstar-record .wf-stats-group .val{ font-weight:800; }';
-		$out .= '.wf-superstar-record .wf-profile-name{ font-weight:800; font-size:1.05rem; margin-top:8px; text-align:center; }';
-		$out .= '.wf-superstar-record .wf-profile-role{ font-size:0.9rem; color:#6b7280; text-align:center; }';
-		$out .= '.wf-superstar-record .wf-status{ margin-top:6px; color:#fb923c; font-weight:700; text-align:center; }';
-		$out .= '.wf-superstar-record .wf-record-main > *{ min-width:0; }';
-		$out .= '.wf-superstar-record .wf-record-side > *{ min-width:0; }';
-		$out .= '@media (max-width:559px){ .wf-superstar-record .wf-record-dashboard{ flex-direction:column; } .wf-superstar-record .wf-record-main{ width:100% !important; flex:0 0 auto; max-width:100% !important; } .wf-superstar-record .wf-record-side{ margin-left:0; justify-content:flex-start; } .wf-superstar-record .wf-stats-row{ flex-direction:column; } .wf-superstar-record .wf-stats-col{ width:100%; } }';
-		$out .= '@media (min-width:560px){ .wf-superstar-record .wf-stats-row{ flex-direction:row; } .wf-superstar-record .wf-stats-col{ flex:0 0 auto; } }';
-		$out .= '</style>';
-
 		$out .= '<div class="wf-record-dashboard">';
 
-		// LEFT: profile
+		// LEFT: picture + status only
 		$out .= '<div class="wf-record-profile">';
 		$out .= '<div class="wf-profile-photo">';
 		if ( $photo ) {
-			$out .= '<img src="' . esc_url( $photo ) . '" alt="' . esc_attr( $name ) . '">';
+			$out .= '<img decoding="async" src="' . esc_url( $photo ) . '" alt="' . esc_attr( $name ) . '">';
 		} else {
-			$out .= '<div style="padding:12px;text-align:center;color:#6b7280">No Photo</div>';
+			$out .= '<div class="wf-no-photo">No Photo</div>';
 		}
 		$out .= '</div>'; // photo
-
-		$out .= '<div class="wf-profile-name">' . esc_html( $name ) . '</div>';
-		if ( $real_name ) $out .= '<div class="wf-profile-role">(' . esc_html( $real_name ) . ')</div>';
-		if ( $status_term ) $out .= '<div class="wf-status">' . esc_html( $status_term ) . '</div>';
-
+		if ( $status_term ) {
+			$out .= '<div class="wf-status" aria-hidden="true">' . esc_html( $status_term ) . '</div>';
+		}
 		$out .= '</div>'; // left
 
-		// CENTER: metadata constrained to 250px
+		// CENTER
 		$out .= '<div class="wf-record-main">';
-		if ( $dob ) {
-			$out .= '<div class="wf-match-meta"><div class="label">Date of Birth</div><div class="value">' . esc_html( $dob ) . '</div></div>';
+
+		// center-left: name / company / follow
+		$out .= '<div class="wf-center-left">';
+		$out .= '<h1 class="wf-main-name">' . esc_html( $name ) . '</h1>';
+		if ( $real_name ) $out .= '<div class="wf-real-name">(' . esc_html( $real_name ) . ')</div>';
+		if ( $company_term || $stable_term ) {
+			$out .= '<div class="wf-company-line">';
+			if ( $company_term ) $out .= '<span class="wf-company">' . esc_html( $company_term ) . '</span>';
+			if ( $stable_term ) $out .= '<span class="wf-company-sep">•</span><span class="wf-stable">' . esc_html( $stable_term ) . '</span>';
+			$out .= '</div>';
 		}
-		if ( $hometown_term ) {
-			$out .= '<div class="wf-match-meta"><div class="label">Hometown</div><div class="value">' . esc_html( $hometown_term ) . '</div></div>';
-		}
-		if ( $phys ) {
-			$out .= '<div class="wf-match-meta"><div class="label">Physicals</div><div class="value">' . esc_html( $phys ) . '</div></div>';
-		}
-		if ( $company_term ) {
-			$out .= '<div class="wf-match-meta"><div class="label">Company</div><div class="value">' . esc_html( $company_term ) . '</div></div>';
-		}
-		if ( $stable_term ) {
-			$out .= '<div class="wf-match-meta"><div class="label">Stable / Team</div><div class="value">' . esc_html( $stable_term ) . '</div></div>';
-		}
+		$out .= '<div class="wf-follow-wrap"><button class="wf-follow" type="button">Follow</button></div>';
+		$out .= '</div>'; // wf-center-left
 
-		$out .= '</div>'; // center
+		// center-meta: label / value list
+		$out .= '<div class="wf-center-meta">';
+		if ( $height || $weight ) $out .= '<div class="wf-meta-row"><div class="wf-meta-label">HT/WT</div><div class="wf-meta-value">' . esc_html( $phys ) . '</div></div>';
+		if ( $dob ) $out .= '<div class="wf-meta-row"><div class="wf-meta-label">BIRTHDATE</div><div class="wf-meta-value">' . esc_html( $dob ) . '</div></div>';
+		if ( $hometown_term ) $out .= '<div class="wf-meta-row"><div class="wf-meta-label">HOMETOWN</div><div class="wf-meta-value">' . esc_html( $hometown_term ) . '</div></div>';
+		if ( $status_term ) $out .= '<div class="wf-meta-row"><div class="wf-meta-label">STATUS</div><div class="wf-meta-value"><span class="wf-status-dot" aria-hidden="true"></span>' . esc_html( $status_term ) . '</div></div>';
+		$out .= '</div>'; // wf-center-meta
 
-		// RIGHT: expand to remaining space; margin-left:auto moves this block to the right
-		$out .= '<div class="wf-record-side">';
-		$out .= '<div class="wf-record-stats">';
+		$out .= '</div>'; // wf-record-main
 
-		// Tag + Singles laid out inside a responsive row container
-		$out .= '<div class="wf-stats-row">';
+		// RIGHT: stats (numbers row + boxes + total)
+		$out .= '<div class="wf-record-side"><div class="wf-record-stats">';
 
-		// Tag column
-		$out .= '<div class="wf-stats-col">';
-		$out .= '<div class="wf-stats-group" style="background:linear-gradient(180deg, rgba(4,22,18,0.16), rgba(4,22,18,0.04));">';
-		$out .= '<div style="font-weight:800;margin-bottom:6px;">Tag</div>';
-		$out .= '<div class="row-like"><div class="label">Matches</div><div class="val">' . esc_html( $tag_matches ) . '</div></div>';
-		$out .= '<div class="row-like"><div class="label">Wins</div><div class="val">' . esc_html( $tag_wins ) . '</div></div>';
-		$out .= '<div class="row-like"><div class="label">Losses</div><div class="val">' . esc_html( $tag_losses ) . '</div></div>';
-		if ( $tag_win_pct !== '' ) {
-			$out .= '<div class="row-like"><div class="label">Win %</div><div class="val">' . esc_html( $tag_win_pct ) . '%</div></div>';
-		}
-		$out .= '</div>'; // tag group
-		$out .= '</div>'; // tag col
+		// numbers row
+		$out .= '<div class="wf-numbers">';
+		$out .= '<div class="wf-number-col"><div class="wf-number-label">Tag</div><div class="wf-number">' . esc_html( $tag_matches ) . '</div><div class="wf-number-sub">Matches</div></div>';
+		$out .= '<div class="wf-number-col"><div class="wf-number-label">Singles</div><div class="wf-number">' . esc_html( $singles_matches ) . '</div><div class="wf-number-sub">Matches</div></div>';
+		$out .= '</div>'; // wf-numbers
 
-		// Singles column
-		$out .= '<div class="wf-stats-col">';
-		$out .= '<div class="wf-stats-group" style="background:linear-gradient(180deg, rgba(12,8,20,0.12), rgba(12,8,20,0.02));">';
-		$out .= '<div style="font-weight:800;margin-bottom:6px;">Singles</div>';
-		$out .= '<div class="row-like"><div class="label">Matches</div><div class="val">' . esc_html( $singles_matches ) . '</div></div>';
-		$out .= '<div class="row-like"><div class="label">Wins</div><div class="val">' . esc_html( $wins ) . '</div></div>';
-		$out .= '<div class="row-like"><div class="label">Losses</div><div class="val">' . esc_html( $losses ) . '</div></div>';
-		if ( $singles_win_pct !== '' ) {
-			$out .= '<div class="row-like"><div class="label">Win %</div><div class="val">' . esc_html( $singles_win_pct ) . '%</div></div>';
-		}
-		$out .= '</div>'; // singles group
-		$out .= '</div>'; // singles col
+		// two record boxes
+		$out .= '<div class="wf-record-boxes">';
+		$out .= '<div class="wf-record-box wf-box-tag">';
+		$out .= '<div class="record-title">Tag</div>';
+		$out .= '<div class="record-row-like"><div class="k">Matches</div><div class="v">' . esc_html( $tag_matches ) . '</div></div>';
+		$out .= '<div class="record-row-like"><div class="k">Wins</div><div class="v">' . esc_html( $tag_wins ) . '</div></div>';
+		$out .= '<div class="record-row-like"><div class="k">Losses</div><div class="v">' . esc_html( $tag_losses ) . '</div></div>';
+		if ( $tag_win_pct !== '' ) $out .= '<div class="record-row-like"><div class="k">Win %</div><div class="v win-percent">' . esc_html( $tag_win_pct ) . '%</div></div>';
+		$out .= '</div>'; // tag box
 
-		$out .= '</div>'; // stats-row
+		$out .= '<div class="wf-record-box wf-box-singles">';
+		$out .= '<div class="record-title">Singles</div>';
+		$out .= '<div class="record-row-like"><div class="k">Matches</div><div class="v">' . esc_html( $singles_matches ) . '</div></div>';
+		$out .= '<div class="record-row-like"><div class="k">Wins</div><div class="v">' . esc_html( $wins ) . '</div></div>';
+		$out .= '<div class="record-row-like"><div class="k">Losses</div><div class="v">' . esc_html( $losses ) . '</div></div>';
+		if ( $singles_win_pct !== '' ) $out .= '<div class="record-row-like"><div class="k">Win %</div><div class="v win-percent">' . esc_html( $singles_win_pct ) . '%</div></div>';
+		$out .= '</div>'; // singles box
 
-		// Compact total box below groups (keeps right alignment)
-		$out .= '<div style="margin-top:12px;padding:8px;border-radius:6px;background:rgba(255,122,89,0.06);font-weight:800;text-align:center;max-width:260px;align-self:flex-end;">Total Matches: ' . esc_html( $total_matches ) . '</div>';
+		$out .= '</div>'; // wf-record-boxes
 
-		$out .= '</div>'; // wf-record-stats
-		$out .= '</div>'; // wf-record-side
+		// total pill
+		$out .= '<div class="wf-total">Total Matches: ' . esc_html( $total_matches ) . '</div>';
 
-		$out .= '</div>'; // wf-record-dashboard
-		$out .= '</div>'; // wrapper
+		$out .= '</div></div>'; // wf-record-stats, wf-record-side
+
+		$out .= '</div></div>'; // wf-record-dashboard, wrapper
 
 		return apply_filters( 'wf_shortcode_superstar_record_output', $out, $post_id, $atts );
 	}
